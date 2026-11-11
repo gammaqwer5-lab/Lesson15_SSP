@@ -2,36 +2,59 @@
 using StudentSystemProgramming.Models;
 
 namespace StudentSystemProgramming.Services;
-
+// Полностью заменить
+// - если ключ отсутствует - возвращаются настройки по умолчанию;
+// - если `SchemaVersion` отсутствует - считается, что это старая схема версии 0;
+// - настройки старой схемы сохраняются, а версия обновляется до 1;
+// - если версия выше поддерживаемой - приложение сообщает об этом;
+// - сброс удаляет только учебную ветку.
 public sealed class RegistrySettingsService
 {
     private const string RegistryPath =
         @"Software\StudentSystemProgramming";
 
+    private const int CurrentSchemaVersion = 1;
+
     public AppSettings Load()
     {
         var settings = new AppSettings();
 
-        // Открытие ключа
-        // OpenSubKey возвращает `null`, если ключ отсутствует
-        // Это не исключительная ситуация, потому что приложение может быть запущено впервые
-        // Почему используется `using`? 
-        // `RegistryKey` реализует `IDisposable`. После работы с ключом его необходимо освободить.
         using RegistryKey? key =
             Registry.CurrentUser.OpenSubKey(RegistryPath);
 
-        // Если ключа нет, возвращаем настройки по умолчанию.
         if (key is null)
         {
             return settings;
         }
 
-        // Чтение значения
-        // `GetValue` возвращает `object?`, потому что в реестре могут храниться разные типы данных
-        // Поэтому мы проверяем тип через `is string` чуть далее
+        object? schemaValue = key.GetValue("SchemaVersion");
+
+        int storedSchemaVersion = 0;
+
+        if (schemaValue is int version)
+        {
+            storedSchemaVersion = version;
+        }
+        else if (schemaValue is not null)
+        {
+            throw new InvalidDataException(
+                "Некорректный тип SchemaVersion в реестре.");
+        }
+
+        if (storedSchemaVersion < 0)
+        {
+            throw new InvalidDataException(
+                "Версия схемы не может быть отрицательной.");
+        }
+
+        if (storedSchemaVersion > CurrentSchemaVersion)
+        {
+            throw new InvalidDataException(
+                "Настройки созданы более новой версией приложения.");
+        }
+
         object? themeValue = key.GetValue("Theme");
         object? launchCountValue = key.GetValue("LaunchCount");
-
 
         if (themeValue is string theme &&
             (theme == "Light" || theme == "Dark"))
@@ -45,17 +68,19 @@ public sealed class RegistrySettingsService
             settings.LaunchCount = launchCount;
         }
 
+        // Версия 0 означает старую схему без SchemaVersion.
+        // После чтения известных значений сохраняем актуальную версию.
+        if (storedSchemaVersion < CurrentSchemaVersion)
+        {
+            Save(settings);
+        }
+
         return settings;
     }
 
     public void Save(AppSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
-
-        using RegistryKey key =
-            Registry.CurrentUser.CreateSubKey(
-                RegistryPath,
-                writable: true);
 
         if (settings.Theme != "Light" &&
             settings.Theme != "Dark")
@@ -69,8 +94,12 @@ public sealed class RegistrySettingsService
             throw new ArgumentOutOfRangeException(
                 nameof(settings.LaunchCount));
         }
-        // Сохранение
-        // Третий параметр явно указывает тип значения
+
+        using RegistryKey key =
+            Registry.CurrentUser.CreateSubKey(
+                RegistryPath,
+                writable: true);
+
         key.SetValue(
             "Theme",
             settings.Theme,
@@ -80,5 +109,20 @@ public sealed class RegistrySettingsService
             "LaunchCount",
             settings.LaunchCount,
             RegistryValueKind.DWord);
+
+        key.SetValue(
+            "SchemaVersion",
+            CurrentSchemaVersion,
+            RegistryValueKind.DWord);
+    }
+
+    // Удаляется только HKCU\Software\StudentSystemProgramming
+    // Не удаляется родительский ключ `Software` и тем более вся ветка `HKCU`
+    // `throwOnMissingSubKey: false` означает, что отсутствие удаляемого ключа не считается ошибкой.
+    public void Reset()
+    {
+        Registry.CurrentUser.DeleteSubKeyTree(
+            RegistryPath,
+            throwOnMissingSubKey: false);
     }
 }
